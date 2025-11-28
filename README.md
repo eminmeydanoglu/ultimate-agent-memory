@@ -24,11 +24,17 @@ source .venv/bin/activate
 uv pip install -e .
 ```
 
-5. Update `.env` file in the root directory with your mem0 API key:
+5. Update `.env` file in the root directory with your OpenAI API key:
 
 ```bash
-MEM0_API_KEY=your_api_key_here
+# Local Hybrid Mode - data stays on your disk, only LLM calls go to OpenAI
+OPENAI_API_KEY=your_openai_api_key_here
 ```
+
+> **Note:** This server runs in "Local Hybrid" mode:
+> - **Memory Storage**: Fully local using ChromaDB (stored in `./local_mem0_db/`)
+> - **Intelligence**: Remote LLM (OpenAI) for reasoning and extraction
+> - **No Mem0 Cloud**: Your data never leaves your machine
 
 ## Usage
 

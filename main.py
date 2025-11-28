@@ -1,3 +1,15 @@
+import os
+import sys
+
+# Fix for sqlite3 on Linux systems (must be before chromadb import)
+# Windows has sqlite3 bundled with Python, so this is only needed on Linux
+if sys.platform == "linux":
+    try:
+        __import__('pysqlite3')
+        sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
+    except ImportError:
+        pass  # pysqlite3 not installed, use system sqlite3
+
 from mcp.server.fastmcp import FastMCP
 from starlette.applications import Starlette
 from mcp.server.sse import SseServerTransport
@@ -5,7 +17,7 @@ from starlette.requests import Request
 from starlette.routing import Mount, Route
 from mcp.server import Server
 import uvicorn
-from mem0 import MemoryClient
+from mem0 import Memory
 from dotenv import load_dotenv
 import json
 
@@ -14,18 +26,36 @@ load_dotenv()
 # Initialize FastMCP server for mem0 tools
 mcp = FastMCP("mem0-mcp")
 
-# Initialize mem0 client and set default user
-mem0_client = MemoryClient()
-DEFAULT_USER_ID = "cursor_mcp"
-CUSTOM_INSTRUCTIONS = """
-Extract the Following Information:  
+# Define Local Hybrid Config - data stays local, LLM is remote
+LOCAL_HYBRID_CONFIG = {
+    "vector_store": {
+        "provider": "chroma",
+        "config": {
+            "collection_name": "agent_memory",
+            "path": "./local_mem0_db",  # Persistent local folder
+        }
+    },
+    "llm": {
+        "provider": "openai",  # Change to "gemini" or "anthropic" if needed
+        "config": {
+            "model": "gpt-4o-mini",  # Cost-effective for memory ops
+            "temperature": 0,
+            "max_tokens": 1500,
+            "api_key": os.environ.get("OPENAI_API_KEY")
+        }
+    },
+    "embedder": {
+        "provider": "openai",
+        "config": {
+            "model": "text-embedding-3-small",
+            "api_key": os.environ.get("OPENAI_API_KEY")
+        }
+    }
+}
 
-- Code Snippets: Save the actual code for future reference.  
-- Explanation: Document a clear description of what the code does and how it works.
-- Related Technical Details: Include information about the programming language, dependencies, and system specifications.  
-- Key Features: Highlight the main functionalities and important aspects of the snippet.
-"""
-mem0_client.update_project(custom_instructions=CUSTOM_INSTRUCTIONS)
+# Initialize mem0 with local hybrid config
+mem0_client = Memory.from_config(LOCAL_HYBRID_CONFIG)
+DEFAULT_USER_ID = "cursor_mcp"
 
 @mcp.tool(
     description="""Add a new coding preference to mem0. This tool stores code snippets, implementation details,
@@ -57,9 +87,9 @@ async def add_coding_preference(text: str) -> str:
         text: The content to store in memory, including code, documentation, and context
     """
     try:
-        messages = [{"role": "user", "content": text}]
-        mem0_client.add(messages, user_id=DEFAULT_USER_ID, output_format="v1.1")
-        return f"Successfully added preference: {text}"
+        # Local Memory uses .add() directly with text content
+        mem0_client.add(text, user_id=DEFAULT_USER_ID)
+        return f"Successfully added preference: {text[:100]}..."
     except Exception as e:
         return f"Error adding preference: {str(e)}"
 
@@ -88,8 +118,14 @@ async def get_all_coding_preferences() -> str:
     Each preference includes metadata about when it was created and its content type.
     """
     try:
-        memories = mem0_client.get_all(user_id=DEFAULT_USER_ID, page=1, page_size=50)
-        flattened_memories = [memory["memory"] for memory in memories["results"]]
+        memories = mem0_client.get_all(user_id=DEFAULT_USER_ID)
+        # Handle both list and dict response formats
+        if isinstance(memories, dict) and "results" in memories:
+            flattened_memories = [memory.get("memory", memory) for memory in memories["results"]]
+        elif isinstance(memories, list):
+            flattened_memories = [memory.get("memory", memory) for memory in memories]
+        else:
+            flattened_memories = memories
         return json.dumps(flattened_memories, indent=2)
     except Exception as e:
         return f"Error getting preferences: {str(e)}"
@@ -121,8 +157,14 @@ async def search_coding_preferences(query: str) -> str:
               or specific technical terms.
     """
     try:
-        memories = mem0_client.search(query, user_id=DEFAULT_USER_ID, output_format="v1.1")
-        flattened_memories = [memory["memory"] for memory in memories["results"]]
+        memories = mem0_client.search(query, user_id=DEFAULT_USER_ID)
+        # Handle both list and dict response formats
+        if isinstance(memories, dict) and "results" in memories:
+            flattened_memories = [memory.get("memory", memory) for memory in memories["results"]]
+        elif isinstance(memories, list):
+            flattened_memories = [memory.get("memory", memory) for memory in memories]
+        else:
+            flattened_memories = memories
         return json.dumps(flattened_memories, indent=2)
     except Exception as e:
         return f"Error searching preferences: {str(e)}"
