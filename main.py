@@ -1,5 +1,22 @@
 import os
 import sys
+from datetime import datetime
+import warnings
+
+# Check if running in stdio mode (for VS Code/Copilot) - suppress print output
+STDIO_MODE = '--stdio' in sys.argv
+
+# In stdio mode, suppress all warnings to stderr as well
+if STDIO_MODE:
+    warnings.filterwarnings("ignore")
+    # Redirect stderr to devnull to suppress library warnings
+    import io
+    sys.stderr = io.StringIO()
+
+def log_print(*args, **kwargs):
+    """Print only when not in stdio mode (stdio mode needs clean stdout for JSON-RPC)"""
+    if not STDIO_MODE:
+        print(*args, **kwargs)
 
 # Fix for sqlite3 on Linux systems (must be before chromadb import)
 # Windows has sqlite3 bundled with Python, so this is only needed on Linux
@@ -23,6 +40,130 @@ import json
 
 load_dotenv()
 
+# ============== Gemini API Logging ==============
+GEMINI_LOG_FILE = "./gemini_log.jsonl"
+
+def log_gemini_request(operation: str, input_data: dict, output_data: dict, error: str = None):
+    """Log Gemini API requests to a JSONL file"""
+    log_entry = {
+        "timestamp": datetime.now().isoformat(),
+        "operation": operation,
+        "input": input_data,
+        "output": output_data,
+        "error": error
+    }
+    try:
+        with open(GEMINI_LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(json.dumps(log_entry, ensure_ascii=False, default=str) + "\n")
+    except Exception as e:
+        log_print(f"[GeminiLog] Error writing log: {e}")
+
+# ============== Fix mem0 Gemini Bug for 2.5 Flash ==============
+# Bug: tool_config is always set even when tools is None
+# This causes "400 Function calling config is set without function_declarations"
+try:
+    from mem0.llms.gemini import GeminiLLM
+    from google.generativeai.types import content_types
+    import google.generativeai as genai
+    
+    _original_generate_response = GeminiLLM.generate_response
+    
+    def fixed_generate_response(self, messages, response_format=None, tools=None, tool_choice="auto"):
+        """Fixed version that only sets tool_config when tools are provided"""
+        params = {
+            "temperature": self.config.temperature,
+            "max_output_tokens": self.config.max_tokens,
+            "top_p": self.config.top_p,
+        }
+
+        if response_format is not None and response_format["type"] == "json_object":
+            params["response_mime_type"] = "application/json"
+            if "schema" in response_format:
+                params["response_schema"] = response_format["schema"]
+        
+        # FIX: Only set tool_config if tools are actually provided
+        tool_config = None
+        if tools and tool_choice:
+            tool_config = content_types.to_tool_config(
+                {
+                    "function_calling_config": {
+                        "mode": tool_choice,
+                        "allowed_function_names": (
+                            [tool["function"]["name"] for tool in tools] if tool_choice == "any" else None
+                        ),
+                    }
+                }
+            )
+        
+        # Log the request
+        input_data = {
+            "model": self.client.model_name if hasattr(self.client, 'model_name') else str(self.client),
+            "messages": str(messages)[:2000],
+            "tools": str(tools)[:500] if tools else None,
+            "tool_choice": tool_choice
+        }
+        
+        try:
+            response = self.client.generate_content(
+                contents=self._reformat_messages(messages),
+                tools=self._reformat_tools(tools),
+                generation_config=genai.GenerationConfig(**params),
+                tool_config=tool_config,
+            )
+            
+            result = self._parse_response(response, tools)
+            
+            # Log the response
+            output_data = {
+                "response": str(result)[:2000]
+            }
+            log_gemini_request("llm_generate", input_data, output_data)
+            
+            return result
+        except Exception as e:
+            log_gemini_request("llm_generate", input_data, {}, error=str(e))
+            raise
+    
+    GeminiLLM.generate_response = fixed_generate_response
+    log_print("[GeminiFix] Patched mem0 GeminiLLM.generate_response for 2.5 Flash compatibility")
+    
+except ImportError as e:
+    log_print(f"[GeminiFix] Could not patch mem0 GeminiLLM: {e}")
+except Exception as e:
+    log_print(f"[GeminiFix] Failed to patch: {e}")
+
+# Monkey-patch google.generativeai to intercept embedding API calls
+try:
+    import google.generativeai as genai
+    
+    # Patch embed_content function for logging
+    _original_embed_content = genai.embed_content
+    
+    def logged_embed_content(*args, **kwargs):
+        input_data = {
+            "args": [str(a)[:500] for a in args],
+            "kwargs": {k: str(v)[:500] for k, v in kwargs.items()}
+        }
+        try:
+            result = _original_embed_content(*args, **kwargs)
+            output_data = {
+                "embedding_length": len(result.get('embedding', [])) if isinstance(result, dict) else "N/A"
+            }
+            log_gemini_request("embed_content", input_data, output_data)
+            return result
+        except Exception as e:
+            log_gemini_request("embed_content", input_data, {}, error=str(e))
+            raise
+    
+    genai.embed_content = logged_embed_content
+    log_print(f"[GeminiLog] Embedding logging enabled -> {GEMINI_LOG_FILE}")
+    
+except ImportError:
+    log_print("[GeminiLog] google.generativeai not found, logging disabled")
+except Exception as e:
+    log_print(f"[GeminiLog] Failed to patch embeddings: {e}")
+# ============== End Gemini Patches ==============
+
 # Initialize FastMCP server for mem0 tools
 mcp = FastMCP("mem0-mcp")
 
@@ -36,19 +177,17 @@ LOCAL_HYBRID_CONFIG = {
         }
     },
     "llm": {
-        "provider": "openai",  # Change to "gemini" or "anthropic" if needed
+        "provider": "gemini",
         "config": {
-            "model": "gpt-4o-mini",  # Cost-effective for memory ops
-            "temperature": 0,
-            "max_tokens": 1500,
-            "api_key": os.environ.get("OPENAI_API_KEY")
+            "model": "gemini-2.5-flash",
+            "api_key": os.environ.get("GOOGLE_API_KEY")
         }
     },
     "embedder": {
-        "provider": "openai",
+        "provider": "gemini",
         "config": {
-            "model": "text-embedding-3-small",
-            "api_key": os.environ.get("OPENAI_API_KEY")
+            "model": "models/text-embedding-004",
+            "api_key": os.environ.get("GOOGLE_API_KEY")
         }
     }
 }
@@ -195,16 +334,19 @@ def create_starlette_app(mcp_server: Server, *, debug: bool = False) -> Starlett
 
 
 if __name__ == "__main__":
-    mcp_server = mcp._mcp_server
-
     import argparse
 
-    parser = argparse.ArgumentParser(description='Run MCP SSE-based server')
-    parser.add_argument('--host', default='0.0.0.0', help='Host to bind to')
-    parser.add_argument('--port', type=int, default=8080, help='Port to listen on')
+    parser = argparse.ArgumentParser(description='Run MCP server')
+    parser.add_argument('--host', default='0.0.0.0', help='Host to bind to (SSE mode)')
+    parser.add_argument('--port', type=int, default=8080, help='Port to listen on (SSE mode)')
+    parser.add_argument('--stdio', action='store_true', help='Run in stdio mode for VS Code integration')
     args = parser.parse_args()
 
-    # Bind SSE request handling to MCP server
-    starlette_app = create_starlette_app(mcp_server, debug=True)
-
-    uvicorn.run(starlette_app, host=args.host, port=args.port)
+    if args.stdio:
+        # Run in stdio mode (for VS Code/Copilot integration)
+        mcp.run(transport='stdio')
+    else:
+        # Run in SSE mode (for HTTP-based clients)
+        mcp_server = mcp._mcp_server
+        starlette_app = create_starlette_app(mcp_server, debug=True)
+        uvicorn.run(starlette_app, host=args.host, port=args.port)

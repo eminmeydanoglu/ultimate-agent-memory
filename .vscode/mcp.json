@@ -1,0 +1,10 @@
+{
+  "servers": {
+    "mem0-mcp": {
+      "type": "stdio",
+      "command": "uv",
+      "args": ["run", "python", "main.py", "--stdio"],
+      "cwd": "c:\\Users\\eminm\\rag-project\\mem0-mcp"
+    }
+  }
+}
