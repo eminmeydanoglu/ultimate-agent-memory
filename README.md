@@ -1,4 +1,4 @@
-# Mem0 MCP Server
+# Memory MCP Server with mem0
 
 A local-first [MCP](https://modelcontextprotocol.io/introduction) server with persistent memory powered by [mem0](https://mem0.ai). Works with VS Code Copilot, Cursor, and other MCP clients.
 
