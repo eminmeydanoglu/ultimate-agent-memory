@@ -12,4 +12,5 @@ dependencies = [
     "starlette>=0.46.0",
     "uvicorn>=0.34.0",
     "chromadb>=0.4.0",
+    "flask>=3.0.0",
 ]
