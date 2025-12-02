@@ -1,93 +1,84 @@
-# MCP Server with Mem0 for Managing Coding Preferences
+# Mem0 MCP Server
 
-This demonstrates a structured approach for using an [MCP](https://modelcontextprotocol.io/introduction) server with [mem0](https://mem0.ai) to manage coding preferences efficiently. The server can be used with Cursor and provides essential tools for storing, retrieving, and searching coding preferences.
+A local-first [MCP](https://modelcontextprotocol.io/introduction) server with persistent memory powered by [mem0](https://mem0.ai). Works with VS Code Copilot, Cursor, and other MCP clients.
+
+## Architecture
+
+- **Vector Store**: ChromaDB for local persistent storage (`./local_mem0_db/`)
+- **LLM & Embeddings**: Configurable provider (default: Google Gemini)
+- **Transport**: SSE (HTTP) or stdio for different clients
+
+## MCP Tools
+
+| Tool | Description |
+|------|-------------|
+| `remember` | Store information, code snippets, or preferences |
+| `recall` | Semantic search through stored memories |
+| `recall_all` | Get all memories with IDs |
+| `forget` | Delete memories by ID |
 
 ## Installation
 
-1. Clone this repository
-2. Initialize the `uv` environment:
-
 ```bash
-uv venv
+git clone https://github.com/eminmeydanoglu/mem0-mcp.git
+cd mem0-mcp
+
+# Install uv if not installed
+pip install uv
+
+# Install dependencies
+uv sync
+
+# Configure environment
+cp .env.example .env
+# Edit .env and add your API key
 ```
-
-3. Activate the virtual environment:
-
-```bash
-source .venv/bin/activate
-```
-
-4. Install the dependencies using `uv`:
-
-```bash
-# Install in editable mode from pyproject.toml
-uv pip install -e .
-```
-
-5. Update `.env` file in the root directory with your OpenAI API key:
-
-```bash
-# Local Hybrid Mode - data stays on your disk, only LLM calls go to OpenAI
-OPENAI_API_KEY=your_openai_api_key_here
-```
-
-> **Note:** This server runs in "Local Hybrid" mode:
-> - **Memory Storage**: Fully local using ChromaDB (stored in `./local_mem0_db/`)
-> - **Intelligence**: Remote LLM (OpenAI) for reasoning and extraction
-> - **No Mem0 Cloud**: Your data never leaves your machine
 
 ## Usage
 
-1. Start the MCP server:
+### MCP Server
+
+**SSE Mode** (Cursor):
+```bash
+uv run main.py --host 0.0.0.0 --port 8080
+```
+Connect to: `http://localhost:8080/sse`
+
+**Stdio Mode** (VS Code Copilot) - add to `settings.json`:
+```json
+{
+  "mcp": {
+    "servers": {
+      "mem0": {
+        "command": "uv",
+        "args": ["run", "main.py", "--stdio"],
+        "cwd": "/path/to/mem0-mcp"
+      }
+    }
+  }
+}
+```
+
+### Memory Manager (Web UI)
+
+A simple web interface for viewing and managing memories:
 
 ```bash
-uv run main.py
+uv run memory_manager.py
 ```
 
-2. In Cursor, connect to the SSE endpoint, follow this [doc](https://docs.cursor.com/context/model-context-protocol) for reference:
+Open http://localhost:5000
 
-```
-http://0.0.0.0:8080/sse
-```
+## Configuration
 
-3. Open the Composer in Cursor and switch to `Agent` mode.
+Create `.env` with your LLM provider API key:
 
-## Demo with Cursor
-
-https://github.com/user-attachments/assets/56670550-fb11-4850-9905-692d3496231c
-
-## Features
-
-The server provides three main tools for managing code preferences:
-
-1. `add_coding_preference`: Store code snippets, implementation details, and coding patterns with comprehensive context including:
-   - Complete code with dependencies
-   - Language/framework versions
-   - Setup instructions
-   - Documentation and comments
-   - Example usage
-   - Best practices
-
-2. `get_all_coding_preferences`: Retrieve all stored coding preferences to analyze patterns, review implementations, and ensure no relevant information is missed.
-
-3. `search_coding_preferences`: Semantically search through stored coding preferences to find relevant:
-   - Code implementations
-   - Programming solutions
-   - Best practices
-   - Setup guides
-   - Technical documentation
-
-## Why?
-
-This implementation allows for a persistent coding preferences system that can be accessed via MCP. The SSE-based server can run as a process that agents connect to, use, and disconnect from whenever needed. This pattern fits well with "cloud-native" use cases where the server and clients can be decoupled processes on different nodes.
-
-### Server
-
-By default, the server runs on 0.0.0.0:8080 but is configurable with command line arguments like:
-
-```
-uv run main.py --host <your host> --port <your port>
+```bash
+GOOGLE_API_KEY=your_api_key_here
 ```
 
-The server exposes an SSE endpoint at `/sse` that MCP clients can connect to for accessing the coding preferences management tools.
+## Requirements
+
+- Python ≥3.12
+- LLM API key
 
