@@ -2,6 +2,8 @@ import os
 import sys
 from datetime import datetime
 import warnings
+import atexit
+import signal
 
 # Check if running in stdio mode (for VS Code/Copilot) - suppress print output
 STDIO_MODE = '--stdio' in sys.argv
@@ -27,16 +29,23 @@ if sys.platform == "linux":
     except ImportError:
         pass  # pysqlite3 not installed, use system sqlite3
 
+# Core imports (always needed)
 from mcp.server.fastmcp import FastMCP
-from starlette.applications import Starlette
-from mcp.server.sse import SseServerTransport
-from starlette.requests import Request
-from starlette.routing import Mount, Route
 from mcp.server import Server
-import uvicorn
 from mem0 import Memory
 from dotenv import load_dotenv
 import json
+
+# SSE-only imports - loaded lazily only when SSE mode is used
+# This speeds up stdio mode startup significantly
+def get_sse_imports():
+    """Lazy load SSE-related imports only when needed"""
+    from starlette.applications import Starlette
+    from mcp.server.sse import SseServerTransport
+    from starlette.requests import Request
+    from starlette.routing import Mount, Route
+    import uvicorn
+    return Starlette, SseServerTransport, Request, Mount, Route, uvicorn
 
 load_dotenv()
 
@@ -192,111 +201,163 @@ LOCAL_HYBRID_CONFIG = {
     }
 }
 
-# Initialize mem0 with local hybrid config
-mem0_client = Memory.from_config(LOCAL_HYBRID_CONFIG)
+# Lazy-loaded mem0 client - initialized on first use
+_mem0_client = None
 DEFAULT_USER_ID = "cursor_mcp"
 
+def get_mem0_client():
+    """Get or initialize the mem0 client (lazy loading for faster startup)"""
+    global _mem0_client
+    if _mem0_client is None:
+        log_print("[Mem0] Initializing memory client...")
+        _mem0_client = Memory.from_config(LOCAL_HYBRID_CONFIG)
+        log_print("[Mem0] Memory client ready!")
+    return _mem0_client
+
+def cleanup():
+    """Cleanup function called on exit - closes ChromaDB connection properly"""
+    global _mem0_client
+    if _mem0_client is not None:
+        log_print("[Mem0] Cleaning up...")
+        try:
+            # ChromaDB client cleanup if available
+            if hasattr(_mem0_client, 'vector_store') and hasattr(_mem0_client.vector_store, 'client'):
+                client = _mem0_client.vector_store.client
+                if hasattr(client, '_client') and hasattr(client._client, 'close'):
+                    client._client.close()
+            _mem0_client = None
+            log_print("[Mem0] Cleanup complete!")
+        except Exception as e:
+            log_print(f"[Mem0] Cleanup error (ignored): {e}")
+
+# Register cleanup handlers
+atexit.register(cleanup)
+
+def signal_handler(signum, frame):
+    """Handle SIGINT/SIGTERM for graceful shutdown"""
+    log_print(f"\n[Server] Received signal {signum}, shutting down...")
+    cleanup()
+    sys.exit(0)
+
+# Register signal handlers (Windows compatible)
+signal.signal(signal.SIGINT, signal_handler)
+signal.signal(signal.SIGTERM, signal_handler)
+if sys.platform == "win32":
+    signal.signal(signal.SIGBREAK, signal_handler)
+
 @mcp.tool(
-    description="""Add a new coding preference to mem0. This tool stores code snippets, implementation details,
-    and coding patterns for future reference. Store every code snippet. When storing code, you should include:
+    description="""Remember information for future reference. This tool stores code snippets, implementation details,
+    coding patterns, user preferences, and any knowledge worth preserving. When storing code, include:
     - Complete code with all necessary imports and dependencies
     - Language/framework version information (e.g., "Python 3.9", "React 18")
     - Full implementation context and any required setup/configuration
     - Detailed comments explaining the logic, especially for complex sections
     - Example usage or test cases demonstrating the code
     - Any known limitations, edge cases, or performance considerations
-    - Related patterns or alternative approaches
-    - Links to relevant documentation or resources
-    - Environment setup requirements (if applicable)
-    - Error handling and debugging tips
-    The preference will be indexed for semantic search and can be retrieved later using natural language queries."""
+    The memory will be indexed for semantic search and can be recalled later using natural language queries."""
 )
-async def add_coding_preference(text: str) -> str:
-    """Add a new coding preference to mem0.
+async def remember(text: str) -> str:
+    """Remember information for future reference.
 
-    This tool is designed to store code snippets, implementation patterns, and programming knowledge.
-    When storing code, it's recommended to include:
-    - Complete code with imports and dependencies
-    - Language/framework information
-    - Setup instructions if needed
-    - Documentation and comments
-    - Example usage
-
+    Store code snippets, implementation patterns, programming knowledge, or any information.
+    
     Args:
-        text: The content to store in memory, including code, documentation, and context
+        text: The content to remember - code, documentation, preferences, or any knowledge
     """
     try:
         # Local Memory uses .add() directly with text content
-        mem0_client.add(text, user_id=DEFAULT_USER_ID)
+        client = get_mem0_client()
+        client.add(text, user_id=DEFAULT_USER_ID)
         return f"Successfully added preference: {text[:100]}..."
     except Exception as e:
         return f"Error adding preference: {str(e)}"
 
 @mcp.tool(
-    description="""Retrieve all stored coding preferences for the default user. Call this tool when you need 
-    complete context of all previously stored preferences. This is useful when:
-    - You need to analyze all available code patterns
-    - You want to check all stored implementation examples
-    - You need to review the full history of stored solutions
+    description="""Recall all stored memories. Call this tool when you need complete context of everything remembered.
+    This is useful when:
+    - You need to see all available knowledge
+    - You want to review the full history of stored information
     - You want to ensure no relevant information is missed
-    Returns a comprehensive list of:
-    - Code snippets and implementation patterns
-    - Programming knowledge and best practices
-    - Technical documentation and examples
-    - Setup and configuration guides
-    Results are returned in JSON format with metadata."""
+    Returns a comprehensive list of all memories in JSON format with metadata including memory IDs for deletion."""
 )
-async def get_all_coding_preferences() -> str:
-    """Get all coding preferences for the default user.
+async def recall_all() -> str:
+    """Recall all stored memories.
 
-    Returns a JSON formatted list of all stored preferences, including:
-    - Code implementations and patterns
-    - Technical documentation
-    - Programming best practices
-    - Setup guides and examples
-    Each preference includes metadata about when it was created and its content type.
+    Returns a JSON formatted list of all memories, including:
+    - Memory ID (for deletion with forget)
+    - Memory content
+    - Creation timestamp
     """
     try:
-        memories = mem0_client.get_all(user_id=DEFAULT_USER_ID)
-        # Handle both list and dict response formats
+        client = get_mem0_client()
+        memories = client.get_all(user_id=DEFAULT_USER_ID)
+        # Handle both list and dict response formats - preserve full memory objects with IDs
         if isinstance(memories, dict) and "results" in memories:
-            flattened_memories = [memory.get("memory", memory) for memory in memories["results"]]
+            formatted_memories = [{"id": m.get("id"), "memory": m.get("memory"), "created_at": m.get("created_at")} for m in memories["results"]]
         elif isinstance(memories, list):
-            flattened_memories = [memory.get("memory", memory) for memory in memories]
+            formatted_memories = [{"id": m.get("id"), "memory": m.get("memory"), "created_at": m.get("created_at")} for m in memories]
         else:
-            flattened_memories = memories
-        return json.dumps(flattened_memories, indent=2)
+            formatted_memories = memories
+        return json.dumps(formatted_memories, indent=2)
     except Exception as e:
         return f"Error getting preferences: {str(e)}"
 
 @mcp.tool(
-    description="""Search through stored coding preferences using semantic search. This tool should be called 
-    for EVERY user query to find relevant code and implementation details. It helps find:
-    - Specific code implementations or patterns
-    - Solutions to programming problems
-    - Best practices and coding standards
-    - Setup and configuration guides
-    - Technical documentation and examples
-    The search uses natural language understanding to find relevant matches, so you can
-    describe what you're looking for in plain English. Always search the preferences before 
-    providing answers to ensure you leverage existing knowledge."""
+    description="""Forget specific memories by their IDs. Use this tool to remove memories that are:
+    - No longer relevant or outdated
+    - Incorrect or contain errors
+    - Duplicates of other memories
+    - Requested by the user to be forgotten
+    You can delete one or multiple memories at once by providing their IDs.
+    Use recall_all first to see available memories and their IDs."""
 )
-async def search_coding_preferences(query: str) -> str:
-    """Search coding preferences using semantic search.
-
-    The search is powered by natural language understanding, allowing you to find:
-    - Code implementations and patterns
-    - Programming solutions and techniques
-    - Technical documentation and guides
-    - Best practices and standards
-    Results are ranked by relevance to your query.
+async def forget(memory_ids: list[str]) -> str:
+    """Forget specific memories by their IDs.
 
     Args:
-        query: Search query string describing what you're looking for. Can be natural language
-              or specific technical terms.
+        memory_ids: List of memory IDs to delete. Get IDs from recall_all.
     """
     try:
-        memories = mem0_client.search(query, user_id=DEFAULT_USER_ID)
+        client = get_mem0_client()
+        deleted = []
+        errors = []
+        for memory_id in memory_ids:
+            try:
+                client.delete(memory_id)
+                deleted.append(memory_id)
+            except Exception as e:
+                errors.append(f"{memory_id}: {str(e)}")
+        
+        result = f"Successfully deleted {len(deleted)} memory(ies)."
+        if errors:
+            result += f" Errors: {'; '.join(errors)}"
+        return result
+    except Exception as e:
+        return f"Error deleting memories: {str(e)}"
+
+@mcp.tool(
+    description="""Recall memories using semantic search. This tool should be called for EVERY user query
+    to find relevant stored knowledge. It helps find:
+    - Specific code implementations or patterns
+    - Solutions to programming problems
+    - User preferences and information
+    - Technical documentation and examples
+    The search uses natural language understanding to find relevant matches, so you can
+    describe what you're looking for in plain English. Always recall before providing answers
+    to ensure you leverage existing knowledge."""
+)
+async def recall(query: str) -> str:
+    """Recall memories using semantic search.
+
+    The search is powered by natural language understanding, allowing you to find relevant
+    stored knowledge. Results are ranked by relevance to your query.
+
+    Args:
+        query: What you're looking for - can be natural language or specific terms.
+    """
+    try:
+        client = get_mem0_client()
+        memories = client.search(query, user_id=DEFAULT_USER_ID)
         # Handle both list and dict response formats
         if isinstance(memories, dict) and "results" in memories:
             flattened_memories = [memory.get("memory", memory) for memory in memories["results"]]
@@ -308,11 +369,14 @@ async def search_coding_preferences(query: str) -> str:
     except Exception as e:
         return f"Error searching preferences: {str(e)}"
 
-def create_starlette_app(mcp_server: Server, *, debug: bool = False) -> Starlette:
-    """Create a Starlette application that can server the provied mcp server with SSE."""
+def create_starlette_app(mcp_server: Server, *, debug: bool = False):
+    """Create a Starlette application that can serve the provided mcp server with SSE."""
+    # Lazy load SSE imports only when this function is called
+    Starlette, SseServerTransport, Request, Mount, Route, _ = get_sse_imports()
+    
     sse = SseServerTransport("/messages/")
 
-    async def handle_sse(request: Request) -> None:
+    async def handle_sse(request) -> None:
         async with sse.connect_sse(
                 request.scope,
                 request.receive,
@@ -347,6 +411,8 @@ if __name__ == "__main__":
         mcp.run(transport='stdio')
     else:
         # Run in SSE mode (for HTTP-based clients)
+        # Load SSE imports only in SSE mode
+        _, _, _, _, _, uvicorn = get_sse_imports()
         mcp_server = mcp._mcp_server
         starlette_app = create_starlette_app(mcp_server, debug=True)
         uvicorn.run(starlette_app, host=args.host, port=args.port)
