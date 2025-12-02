@@ -1,2 +1,12 @@
 gemini_log.jsonl
 .env
+local_mem0_db
+test_db
+
+# Python build artifacts
+*.egg-info/
+__pycache__/
+*.pyc
+
+# Virtual environment
+.venv/
