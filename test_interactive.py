@@ -1,6 +1,6 @@
 """
 Interactive MCP Client Test for mem0-mcp server
-Run this AFTER restarting the server with: uv run python main.py
+Run server first: uv run python main.py (SSE mode, no --stdio)
 """
 import asyncio
 from mcp import ClientSession
@@ -23,13 +23,14 @@ async def interactive_test():
                 while True:
                     print("\n" + "=" * 40)
                     print("Choose an option:")
-                    print("  1. Add a memory")
-                    print("  2. Get all memories")
-                    print("  3. Search memories")
-                    print("  4. Exit")
+                    print("  1. Remember (add memory)")
+                    print("  2. Recall All (list all memories)")
+                    print("  3. Recall (semantic search)")
+                    print("  4. Forget (delete memories)")
+                    print("  5. Exit")
                     print("=" * 40)
                     
-                    choice = input("\nYour choice (1-4): ").strip()
+                    choice = input("\nYour choice (1-5): ").strip()
                     
                     if choice == "1":
                         print("\nEnter the memory text (or paste code):")
@@ -44,22 +45,34 @@ async def interactive_test():
                         
                         if text:
                             print("\n📤 Adding memory...")
-                            result = await session.call_tool("add_coding_preference", {"text": text})
+                            result = await session.call_tool("remember", {"text": text})
                             print(f"📥 Result: {result.content[0].text}")
                     
                     elif choice == "2":
                         print("\n📤 Getting all memories...")
-                        result = await session.call_tool("get_all_coding_preferences", {})
+                        result = await session.call_tool("recall_all", {})
                         print(f"📥 Result:\n{result.content[0].text}")
                     
                     elif choice == "3":
                         query = input("\nEnter search query: ").strip()
                         if query:
                             print(f"\n📤 Searching for '{query}'...")
-                            result = await session.call_tool("search_coding_preferences", {"query": query})
+                            result = await session.call_tool("recall", {"query": query})
                             print(f"📥 Result:\n{result.content[0].text}")
                     
                     elif choice == "4":
+                        print("\nFirst, let me show you all memories with their IDs:")
+                        result = await session.call_tool("recall_all", {})
+                        print(f"\n{result.content[0].text}\n")
+                        
+                        ids_input = input("Enter memory IDs to delete (comma-separated): ").strip()
+                        if ids_input:
+                            memory_ids = [id.strip() for id in ids_input.split(",")]
+                            print(f"\n📤 Deleting {len(memory_ids)} memory(ies)...")
+                            result = await session.call_tool("forget", {"memory_ids": memory_ids})
+                            print(f"📥 Result: {result.content[0].text}")
+                    
+                    elif choice == "5":
                         print("\n👋 Goodbye!")
                         break
                     
@@ -68,8 +81,8 @@ async def interactive_test():
                         
     except Exception as e:
         print(f"\n❌ Connection error: {e}")
-        print("\nMake sure the server is running:")
-        print("  cd c:\\Users\\eminm\\rag-project\\mem0-mcp")
+        print("\nMake sure the server is running in SSE mode:")
+        print("  cd ~/code/ultimate-agent-memory")
         print("  uv run python main.py")
 
 
