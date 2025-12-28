@@ -1,6 +1,6 @@
 # Memory MCP Server with mem0
 
-A local-first [MCP](https://modelcontextprotocol.io/introduction) server with persistent memory powered by [mem0](https://mem0.ai). Works with VS Code Copilot, Cursor, and other MCP clients.
+A local-first [MCP](https://modelcontextprotocol.io/introduction) server with persistent memory powered by [mem0](https://mem0.ai). Works with your favorite agents and IDEs.
 
 ## Architecture
 
@@ -34,30 +34,6 @@ cp .env.example .env
 # Edit .env and add your API key
 ```
 
-## Usage
-
-### MCP Server
-
-**SSE Mode** (Cursor):
-```bash
-uv run main.py --host 0.0.0.0 --port 8080
-```
-Connect to: `http://localhost:8080/sse`
-
-**Stdio Mode** (VS Code Copilot) - add to `settings.json`:
-```json
-{
-  "mcp": {
-    "servers": {
-      "mem0": {
-        "command": "uv",
-        "args": ["run", "main.py", "--stdio"],
-        "cwd": "/path/to/mem0-mcp"
-      }
-    }
-  }
-}
-```
 
 ### Memory Manager (Web UI)
 
@@ -115,3 +91,28 @@ GOOGLE_API_KEY=your_api_key_here
 - Python ≥3.12
 - LLM API key
 
+
+## Usage
+
+### MCP Server
+
+**SSE Mode** (Cursor):
+```bash
+uv run main.py --host 0.0.0.0 --port 8080
+```
+Connect to: `http://localhost:8080/sse`
+
+**Stdio Mode** (VS Code Copilot) - add to `settings.json`:
+```json
+{
+  "mcp": {
+    "servers": {
+      "mem0": {
+        "command": "uv",
+        "args": ["run", "main.py", "--stdio"],
+        "cwd": "/path/to/mem0-mcp"
+      }
+    }
+  }
+}
+```
